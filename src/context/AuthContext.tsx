@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { User, AuthState } from '../types';
+import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { AuthState } from '../types';
 import axiosInstance from '../axios.config';
 
 // Create a context for authentication
@@ -28,8 +28,34 @@ const initialState: AuthState = {
 // ];
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<AuthState>(initialState);
+  const [state, setState] = useState<AuthState>(initialState)
 
+  useEffect(() => {
+    const initializeAuth = async () => {
+      const token = localStorage.getItem('authToken');
+      if (token) {
+        try {
+          const response = await axiosInstance.get('api/v1/auth/me', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          setState({
+            user: response.data.user,
+            isAuthenticated: true,
+            isLoading: false,
+            error: null,
+          });
+        } catch (error) {
+          console.error('Token validation failed:', error);
+          localStorage.removeItem('authToken');
+          setState({ ...initialState, isLoading: false });
+        }
+      } else {
+        setState({ ...initialState, isLoading: false });
+      }
+    };
+
+    initializeAuth();
+  }, []);
 
   const login = async (email: string, password: string): Promise<void> => {
     setState({ ...state, isLoading: true, error: null });
