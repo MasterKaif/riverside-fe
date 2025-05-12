@@ -1,15 +1,14 @@
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { CallProvider } from './context/CallContext';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import VideoRoom from './components/VideoRoom';
-import { useEffect } from 'react';
 // import axiosInstance from './axios.config';
 
 // Protected route component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isLoading,  } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   
   
   if (isLoading) {
@@ -24,15 +23,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 };
 
 const AppRoutes: React.FC = () => {
-  const { isAuthenticated, isLoading } = useAuth();
-  const navigate = useNavigate();
 
-  useEffect(() => {
-    if (!isLoading && isAuthenticated) {
-      navigate('/dashboard'); // Redirect to dashboard if authenticated
-    }
-  }, [isAuthenticated, isLoading, navigate]);
-  
   return (
     <Routes>
       <Route path="/" element={<Login />} />
