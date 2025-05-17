@@ -3,6 +3,7 @@ import React, {
 	useContext,
 	useState,
 	useEffect,
+	useRef,
 	ReactNode,
 } from "react";
 import { CallState, ConnectionState, MediaState } from "../types";
@@ -21,6 +22,14 @@ interface CallContextType {
 	toggleAudio: () => void;
 	toggleVideo: () => void;
 	toggleScreenShare: () => void;
+	initiateCall: () => Promise<void>;
+}
+
+interface WebSocketMessage {
+	type: 'offer' | 'answer' | 'ice-candidate';
+	payload: any;
+	from: string;
+	to?: string;
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
@@ -47,12 +56,103 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	const [callState, setCallState] = useState<CallState>(initialCallState);
 	const [mediaState, setMediaState] = useState<MediaState>(initialMediaState);
 	const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
+	const wsRef = useRef<WebSocket | null>(null);
 
 	useEffect(() => {
 		return () => {
 			cleanupMediaDevices();
+			if (wsRef.current) {
+				wsRef.current.close();
+			}
 		};
 	}, []);
+
+	const connectWebSocket = (studioId: string) => {
+		const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+		const wsUrl = backendUrl.replace(/^http/, 'ws');
+		const ws = new WebSocket(`${wsUrl}/api/v1/ws?studioId=${studioId}&userId=${user?.id}`);
+
+		ws.onopen = () => {
+			console.log('WebSocket connected');
+		};
+
+		ws.onmessage = async (event) => {
+			const message: WebSocketMessage = JSON.parse(event.data);
+			
+			switch (message.type) {
+				case 'offer':
+					if (peerConnection) {
+						await handleOffer(message.payload);
+					}
+					break;
+				case 'answer':
+					if (peerConnection) {
+						await handleAnswer(message.payload);
+					}
+					break;
+				case 'ice-candidate':
+					if (peerConnection) {
+						await handleIceCandidate(message.payload);
+					}
+					break;
+			}
+		};
+
+		ws.onerror = (error) => {
+			console.error('WebSocket error:', error);
+			setCallState(prev => ({
+				...prev,
+				error: 'WebSocket connection error',
+				connectionState: ConnectionState.ERROR,
+			}));
+		};
+
+		wsRef.current = ws;
+	};
+
+	const sendWebSocketMessage = (message: WebSocketMessage) => {
+		if (wsRef.current?.readyState === WebSocket.OPEN) {
+			wsRef.current.send(JSON.stringify(message));
+		}
+	};
+
+	const handleOffer = async (offer: RTCSessionDescriptionInit) => {
+		if (!peerConnection) return;
+
+		try {
+			await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+			const answer = await peerConnection.createAnswer();
+			await peerConnection.setLocalDescription(answer);
+
+			sendWebSocketMessage({
+				type: 'answer',
+				payload: answer,
+				from: user?.id || '',
+			});
+		} catch (error) {
+			console.error('Error handling offer:', error);
+		}
+	};
+
+	const handleAnswer = async (answer: RTCSessionDescriptionInit) => {
+		if (!peerConnection) return;
+
+		try {
+			await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+		} catch (error) {
+			console.error('Error handling answer:', error);
+		}
+	};
+
+	const handleIceCandidate = async (candidate: RTCIceCandidateInit) => {
+		if (!peerConnection) return;
+
+		try {
+			await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+		} catch (error) {
+			console.error('Error handling ICE candidate:', error);
+		}
+	};
 
 	const cleanupMediaDevices = () => {
 		if (mediaState.localStream) {
@@ -67,7 +167,6 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 
 	const initializeMediaDevices = async (): Promise<MediaStream> => {
 		try {
-			// Stop any existing streams first
 			cleanupMediaDevices();
 
 			const stream = await navigator.mediaDevices.getUserMedia({
@@ -79,7 +178,6 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				}
 			});
 
-			// Ensure tracks are enabled
 			stream.getTracks().forEach(track => {
 				track.enabled = true;
 			});
@@ -128,6 +226,16 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}
 		};
 
+		pc.onicecandidate = (event) => {
+			if (event.candidate) {
+				sendWebSocketMessage({
+					type: 'ice-candidate',
+					payload: event.candidate,
+					from: user?.id || '',
+				});
+			}
+		};
+
 		pc.oniceconnectionstatechange = () => {
 			console.log("ICE connection state:", pc.iceConnectionState);
 
@@ -152,6 +260,28 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 
 		setPeerConnection(pc);
 		return pc;
+	};
+
+	const initiateCall = async () => {
+		if (!peerConnection || !callState.sessionId) return;
+
+		try {
+			const offer = await peerConnection.createOffer();
+			await peerConnection.setLocalDescription(offer);
+
+			sendWebSocketMessage({
+				type: 'offer',
+				payload: offer,
+				from: user?.id || '',
+			});
+		} catch (error) {
+			console.error('Error initiating call:', error);
+			setCallState(prev => ({
+				...prev,
+				error: 'Failed to initiate call',
+				connectionState: ConnectionState.ERROR,
+			}));
+		}
 	};
 
 	const createSession = async (
@@ -190,6 +320,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}
 
 			initializePeerConnection(stream);
+			connectWebSocket(sessionData.id);
 
 			setCallState({
 				sessionId: sessionData.id,
@@ -246,6 +377,8 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				throw new Error("Failed to join session");
 			}
 
+			connectWebSocket(sessionId);
+
 			setCallState({
 				sessionId: sessionData.Id,
 				session: {
@@ -269,6 +402,10 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	};
 
 	const leaveSession = (): void => {
+		if (wsRef.current) {
+			wsRef.current.close();
+			wsRef.current = null;
+		}
 		cleanupMediaDevices();
 		setPeerConnection(null);
 		setCallState(initialCallState);
@@ -380,6 +517,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				toggleAudio,
 				toggleVideo,
 				toggleScreenShare,
+				initiateCall,
 			}}
 		>
 			{children}
