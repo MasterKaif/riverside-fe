@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, {
 	createContext,
 	useContext,
@@ -26,7 +25,6 @@ interface CallContextType {
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
 
-// Initial call state
 const initialCallState: CallState = {
 	sessionId: null,
 	connectionState: ConnectionState.DISCONNECTED,
@@ -34,7 +32,6 @@ const initialCallState: CallState = {
 	participants: [],
 };
 
-// Initial media state
 const initialMediaState: MediaState = {
 	localStream: null,
 	remoteStream: null,
@@ -49,53 +46,68 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	const { user } = useAuth();
 	const [callState, setCallState] = useState<CallState>(initialCallState);
 	const [mediaState, setMediaState] = useState<MediaState>(initialMediaState);
-	const [peerConnection, setPeerConnection] =
-		useState<RTCPeerConnection | null>(null);
+	const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
 
-	// Clean up when component unmounts
 	useEffect(() => {
 		return () => {
-			if (mediaState.localStream) {
-				mediaState.localStream.getTracks().forEach((track) => track.stop());
-			}
-			if (peerConnection) {
-				peerConnection.close();
-			}
+			cleanupMediaDevices();
 		};
-	}, [mediaState.localStream, peerConnection]);
+	}, []);
 
-	// Initialize media devices
+	const cleanupMediaDevices = () => {
+		if (mediaState.localStream) {
+			mediaState.localStream.getTracks().forEach((track) => {
+				track.stop();
+			});
+		}
+		if (peerConnection) {
+			peerConnection.close();
+		}
+	};
+
 	const initializeMediaDevices = async (): Promise<MediaStream> => {
 		try {
+			// Stop any existing streams first
+			cleanupMediaDevices();
+
 			const stream = await navigator.mediaDevices.getUserMedia({
 				audio: true,
-				video: true,
+				video: {
+					width: { ideal: 1280 },
+					height: { ideal: 720 },
+					facingMode: "user"
+				}
 			});
 
-      console.log("Media stream initialized:", stream);
+			// Ensure tracks are enabled
+			stream.getTracks().forEach(track => {
+				track.enabled = true;
+			});
 
-			setMediaState((prev) => ({
+			setMediaState(prev => ({
 				...prev,
 				localStream: stream,
 				audioEnabled: true,
-				videoEnabled: true,
+				videoEnabled: true
 			}));
 
 			return stream;
 		} catch (error) {
 			console.error("Error accessing media devices:", error);
-			setCallState((prev) => ({
+			setCallState(prev => ({
 				...prev,
-				error:
-					"Failed to access camera and microphone. Please check permissions.",
+				error: "Failed to access camera and microphone. Please check permissions.",
 				connectionState: ConnectionState.ERROR,
 			}));
 			throw error;
 		}
 	};
 
-	// Initialize WebRTC peer connection
 	const initializePeerConnection = (stream: MediaStream): RTCPeerConnection => {
+		if (peerConnection) {
+			peerConnection.close();
+		}
+
 		const pc = new RTCPeerConnection({
 			iceServers: [
 				{ urls: "stun:stun.l.google.com:19302" },
@@ -103,40 +115,38 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			],
 		});
 
-		// Add local tracks to peer connection
 		stream.getTracks().forEach((track) => {
 			pc.addTrack(track, stream);
 		});
 
-		// Handle incoming remote streams
 		pc.ontrack = (event) => {
-			setMediaState((prev) => ({
-				...prev,
-				remoteStream: event.streams[0],
-			}));
+			if (event.streams && event.streams[0]) {
+				setMediaState(prev => ({
+					...prev,
+					remoteStream: event.streams[0]
+				}));
+			}
 		};
 
-		// Handle ICE connection state changes
 		pc.oniceconnectionstatechange = () => {
 			console.log("ICE connection state:", pc.iceConnectionState);
 
-			if (
-				pc.iceConnectionState === "connected" ||
-				pc.iceConnectionState === "completed"
-			) {
-				setCallState((prev) => ({
-					...prev,
-					connectionState: ConnectionState.CONNECTED,
-				}));
-			} else if (
-				pc.iceConnectionState === "failed" ||
-				pc.iceConnectionState === "disconnected"
-			) {
-				setCallState((prev) => ({
-					...prev,
-					connectionState: ConnectionState.ERROR,
-					error: "Connection failed. Please try again.",
-				}));
+			switch (pc.iceConnectionState) {
+				case "connected":
+				case "completed":
+					setCallState(prev => ({
+						...prev,
+						connectionState: ConnectionState.CONNECTED,
+					}));
+					break;
+				case "failed":
+				case "disconnected":
+					setCallState(prev => ({
+						...prev,
+						connectionState: ConnectionState.ERROR,
+						error: "Connection failed. Please try again.",
+					}));
+					break;
 			}
 		};
 
@@ -144,7 +154,6 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		return pc;
 	};
 
-	// Create a new session
 	const createSession = async (
 		sessionName: string,
 		sessionDescription: string
@@ -155,14 +164,13 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				connectionState: ConnectionState.CONNECTING,
 			});
 
-			// Initialize media devices
 			const stream = await initializeMediaDevices();
-
-			// Generate a new session ID
+			
 			const token = localStorage.getItem("authToken");
 			if (!token) {
 				throw new Error("User is not authenticated");
 			}
+
 			const session = await axiosInstance.post(
 				"api/v1/studio/create",
 				{
@@ -171,25 +179,18 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				},
 				{
 					headers: {
-						"Content-Type": "application/json",
 						Authorization: `Bearer ${token}`,
 					},
 				}
 			);
-
-      console.log("Session created:", session.data);
 
 			const sessionData = session.data?.session;
 			if (!sessionData) {
 				throw new Error("Failed to create session");
 			}
 
-			// Initialize peer connection
 			initializePeerConnection(stream);
 
-			// In a real app, you would register this session with your signaling server
-
-			// Update call state
 			setCallState({
 				sessionId: sessionData.id,
 				session: {
@@ -214,7 +215,6 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		}
 	};
 
-	// Join an existing session
 	const joinSession = async (sessionId: string): Promise<void> => {
 		try {
 			setCallState({
@@ -223,10 +223,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				connectionState: ConnectionState.CONNECTING,
 			});
 
-			// Initialize media devices
 			const stream = await initializeMediaDevices();
-
-			// Initialize peer connection
 			const pc = initializePeerConnection(stream);
 
 			const token = localStorage.getItem("authToken");
@@ -236,12 +233,9 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 
 			const session = await axiosInstance.post(
 				"api/v1/studio/join",
-				{
-					session_id: sessionId,
-				},
+				{ session_id: sessionId },
 				{
 					headers: {
-						"Content-Type": "application/json",
 						Authorization: `Bearer ${token}`,
 					},
 				}
@@ -252,16 +246,13 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				throw new Error("Failed to join session");
 			}
 
-			// In a real app, you would connect to the signaling server and exchange SDP with the other peer
-
-			// For demo purposes, we'll just simulate a successful connection
 			setCallState({
 				sessionId: sessionData.Id,
-        session: {
-          id: sessionData.Id,
-          name: sessionData.Name,
-          description: sessionData.Description,
-        },
+				session: {
+					id: sessionData.Id,
+					name: sessionData.Name,
+					description: sessionData.Description,
+				},
 				connectionState: ConnectionState.CONNECTED,
 				error: null,
 				participants: [user, sessionData.host],
@@ -273,34 +264,23 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				error: "Failed to join session. Please try again.",
 				connectionState: ConnectionState.ERROR,
 			});
+			throw error;
 		}
 	};
 
-	// Leave the current session
 	const leaveSession = (): void => {
-		// Stop local media tracks
-		if (mediaState.localStream) {
-			mediaState.localStream.getTracks().forEach((track) => track.stop());
-		}
-
-		// Close peer connection
-		if (peerConnection) {
-			peerConnection.close();
-			setPeerConnection(null);
-		}
-
-		// Reset states
+		cleanupMediaDevices();
+		setPeerConnection(null);
 		setCallState(initialCallState);
 		setMediaState(initialMediaState);
 	};
 
-	// Toggle audio
 	const toggleAudio = (): void => {
 		if (mediaState.localStream) {
 			const audioTrack = mediaState.localStream.getAudioTracks()[0];
 			if (audioTrack) {
 				audioTrack.enabled = !audioTrack.enabled;
-				setMediaState((prev) => ({
+				setMediaState(prev => ({
 					...prev,
 					audioEnabled: audioTrack.enabled,
 				}));
@@ -308,13 +288,12 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		}
 	};
 
-	// Toggle video
 	const toggleVideo = (): void => {
 		if (mediaState.localStream) {
 			const videoTrack = mediaState.localStream.getVideoTracks()[0];
 			if (videoTrack) {
 				videoTrack.enabled = !videoTrack.enabled;
-				setMediaState((prev) => ({
+				setMediaState(prev => ({
 					...prev,
 					videoEnabled: videoTrack.enabled,
 				}));
@@ -322,74 +301,63 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		}
 	};
 
-	// Toggle screen sharing
 	const toggleScreenShare = async (): Promise<void> => {
 		try {
 			if (!mediaState.isSharingScreen) {
-				// Start screen sharing
 				const screenStream = await navigator.mediaDevices.getDisplayMedia({
 					video: true,
 				});
 
-				// Replace video track in local stream and peer connection
 				if (mediaState.localStream && peerConnection) {
 					const videoTrack = mediaState.localStream.getVideoTracks()[0];
 					const screenTrack = screenStream.getVideoTracks()[0];
 
 					if (videoTrack && screenTrack) {
-						// Replace track in local stream
 						mediaState.localStream.removeTrack(videoTrack);
 						mediaState.localStream.addTrack(screenTrack);
 
-						// Replace track in peer connection
 						const senders = peerConnection.getSenders();
 						const sender = senders.find(
 							(s) => s.track && s.track.kind === "video"
 						);
 						if (sender) {
-							sender.replaceTrack(screenTrack);
+							await sender.replaceTrack(screenTrack);
 						}
 
-						// Listen for screen sharing end event
 						screenTrack.onended = () => {
 							toggleScreenShare();
 						};
 
-						setMediaState((prev) => ({
+						setMediaState(prev => ({
 							...prev,
 							isSharingScreen: true,
 						}));
 					}
 				}
 			} else {
-				// Stop screen sharing and revert to camera
 				const cameraStream = await navigator.mediaDevices.getUserMedia({
 					video: true,
 				});
 
-				// Replace video track in local stream and peer connection
 				if (mediaState.localStream && peerConnection) {
 					const screenTrack = mediaState.localStream.getVideoTracks()[0];
 					const cameraTrack = cameraStream.getVideoTracks()[0];
 
 					if (screenTrack && cameraTrack) {
-						// Replace track in local stream
 						mediaState.localStream.removeTrack(screenTrack);
 						mediaState.localStream.addTrack(cameraTrack);
 
-						// Replace track in peer connection
 						const senders = peerConnection.getSenders();
 						const sender = senders.find(
 							(s) => s.track && s.track.kind === "video"
 						);
 						if (sender) {
-							sender.replaceTrack(cameraTrack);
+							await sender.replaceTrack(cameraTrack);
 						}
 
-						// Stop screen track
 						screenTrack.stop();
 
-						setMediaState((prev) => ({
+						setMediaState(prev => ({
 							...prev,
 							isSharingScreen: false,
 						}));
@@ -419,13 +387,10 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	);
 };
 
-// Custom hook to use call context
 export const useCall = (): CallContextType => {
 	const context = useContext(CallContext);
-
 	if (context === undefined) {
 		throw new Error("useCall must be used within a CallProvider");
 	}
-
 	return context;
 };
