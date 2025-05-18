@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Share } from 'lucide-react';
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Share, PhoneCall } from 'lucide-react';
 import { useCall } from '../context/CallContext';
 import { ConnectionState } from '../types';
 
@@ -14,32 +14,40 @@ const VideoRoom: React.FC = () => {
     toggleVideo,
     toggleScreenShare,
     leaveSession,
+    initiateCall,
   } = useCall();
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const [isCallStarted, setIsCallStarted] = useState(false);
   
-  // Set up local video stream
   useEffect(() => {
     if (mediaState.localStream && localVideoRef.current) {
       localVideoRef.current.srcObject = mediaState.localStream;
     }
   }, [mediaState.localStream]);
   
-  // Set up remote video stream
   useEffect(() => {
     if (mediaState.remoteStream && remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = mediaState.remoteStream;
+      setIsCallStarted(true);
     }
   }, [mediaState.remoteStream]);
   
-  // Handle leave call
   const handleLeaveCall = () => {
     leaveSession();
     navigate('/dashboard');
   };
   
-  // Copy session ID to clipboard
+  const handleStartCall = async () => {
+    try {
+      await initiateCall();
+      setIsCallStarted(true);
+    } catch (error) {
+      console.error('Failed to start call:', error);
+    }
+  };
+  
   const copySessionId = () => {
     if (sessionId) {
       navigator.clipboard.writeText(sessionId);
@@ -49,7 +57,6 @@ const VideoRoom: React.FC = () => {
 
   return (
     <div className="h-screen flex flex-col bg-gray-900">
-      {/* Header with session ID */}
       <header className="bg-gray-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center">
           <h1 className="text-white font-medium">Video Conference</h1>
@@ -91,10 +98,8 @@ const VideoRoom: React.FC = () => {
         </div>
       </header>
       
-      {/* Video container */}
       <div className="flex-1 flex flex-col md:flex-row p-4 gap-4 relative overflow-hidden">
-        {/* Local video */}
-        <div className={`${mediaState.remoteStream ? 'md:w-1/4 md:h-auto' : 'w-full'} h-full relative rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shadow-lg transition-all duration-300`}>
+        <div className={`${mediaState.remoteStream ? 'md:w-1/2' : 'w-full'} h-full relative rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shadow-lg transition-all duration-300`}>
           <video
             ref={localVideoRef}
             autoPlay
@@ -114,9 +119,8 @@ const VideoRoom: React.FC = () => {
           </div>
         </div>
         
-        {/* Remote video (if connected) */}
-        {mediaState.remoteStream && (
-          <div className="flex-1 relative rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shadow-lg">
+        {mediaState.remoteStream ? (
+          <div className="md:w-1/2 h-full relative rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shadow-lg">
             <video
               ref={remoteVideoRef}
               autoPlay
@@ -127,9 +131,21 @@ const VideoRoom: React.FC = () => {
               Remote User
             </div>
           </div>
-        )}
+        ) : callState.connectionState === ConnectionState.CONNECTED && !isCallStarted ? (
+          <div className="md:w-1/2 h-full relative rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shadow-lg">
+            <div className="text-center">
+              <button
+                onClick={handleStartCall}
+                className="inline-flex items-center px-6 py-3 border border-transparent text-lg font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                <PhoneCall className="mr-2 h-6 w-6" />
+                Start Call
+              </button>
+              <p className="mt-4 text-gray-400">Click to start the video call</p>
+            </div>
+          </div>
+        ) : null}
         
-        {/* Connecting overlay */}
         {callState.connectionState === ConnectionState.CONNECTING && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75">
             <div className="text-center">
@@ -139,7 +155,6 @@ const VideoRoom: React.FC = () => {
           </div>
         )}
         
-        {/* Error overlay */}
         {callState.connectionState === ConnectionState.ERROR && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75">
             <div className="text-center max-w-md p-6 bg-gray-800 rounded-lg">
@@ -159,7 +174,6 @@ const VideoRoom: React.FC = () => {
         )}
       </div>
       
-      {/* Controls */}
       <div className="bg-gray-800 px-4 py-3 flex items-center justify-center space-x-4">
         <button
           onClick={toggleAudio}
