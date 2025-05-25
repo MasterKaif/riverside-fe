@@ -49,6 +49,14 @@ const initialMediaState: MediaState = {
 	isSharingScreen: false,
 };
 
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+];
+
 export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	children,
 }) => {
@@ -57,6 +65,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	const [mediaState, setMediaState] = useState<MediaState>(initialMediaState);
 	const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
 	const wsRef = useRef<WebSocket | null>(null);
+	const isInitiator = useRef<boolean>(false);
 
 	useEffect(() => {
 		return () => {
@@ -67,34 +76,50 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		};
 	}, []);
 
-	const connectWebSocket = (studioId: string) => {
+	const connectWebSocket = (sessionId: string) => {
 		const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 		const wsUrl = backendUrl.replace(/^http/, 'ws');
-		const ws = new WebSocket(`${wsUrl}/api/v1/ws?studioId=${studioId}&userId=${user?.id}`);
+		const ws = new WebSocket(`${wsUrl}/api/v1/ws?sessionId=${sessionId}&userId=${user?.id}`);
 
 		ws.onopen = () => {
 			console.log('WebSocket connected');
+			setCallState(prev => ({
+				...prev,
+				connectionState: ConnectionState.CONNECTED,
+			}));
 		};
 
 		ws.onmessage = async (event) => {
 			const message: WebSocketMessage = JSON.parse(event.data);
 			
-			switch (message.type) {
-				case 'offer':
-					if (peerConnection) {
-						await handleOffer(message.payload);
-					}
-					break;
-				case 'answer':
-					if (peerConnection) {
-						await handleAnswer(message.payload);
-					}
-					break;
-				case 'ice-candidate':
-					if (peerConnection) {
-						await handleIceCandidate(message.payload);
-					}
-					break;
+			try {
+				switch (message.type) {
+					case 'offer':
+						if (peerConnection && !isInitiator.current) {
+							console.log('Received offer, setting remote description');
+							await handleOffer(message.payload);
+						}
+						break;
+					case 'answer':
+						if (peerConnection && isInitiator.current) {
+							console.log('Received answer, setting remote description');
+							await handleAnswer(message.payload);
+						}
+						break;
+					case 'ice-candidate':
+						if (peerConnection) {
+							console.log('Received ICE candidate');
+							await handleIceCandidate(message.payload);
+						}
+						break;
+				}
+			} catch (error) {
+				console.error('Error handling WebSocket message:', error);
+				setCallState(prev => ({
+					...prev,
+					error: 'Failed to process connection message',
+					connectionState: ConnectionState.ERROR,
+				}));
 			}
 		};
 
@@ -107,12 +132,23 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}));
 		};
 
+		ws.onclose = () => {
+			console.log('WebSocket closed');
+			setCallState(prev => ({
+				...prev,
+				connectionState: ConnectionState.DISCONNECTED,
+			}));
+		};
+
 		wsRef.current = ws;
 	};
 
 	const sendWebSocketMessage = (message: WebSocketMessage) => {
 		if (wsRef.current?.readyState === WebSocket.OPEN) {
+			console.log('Sending WebSocket message:', message);
 			wsRef.current.send(JSON.stringify(message));
+		} else {
+			console.error('WebSocket is not connected');
 		}
 	};
 
@@ -120,8 +156,13 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		if (!peerConnection) return;
 
 		try {
+			console.log('Setting remote description from offer');
 			await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+			
+			console.log('Creating answer');
 			const answer = await peerConnection.createAnswer();
+			
+			console.log('Setting local description');
 			await peerConnection.setLocalDescription(answer);
 
 			sendWebSocketMessage({
@@ -131,6 +172,11 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			});
 		} catch (error) {
 			console.error('Error handling offer:', error);
+			setCallState(prev => ({
+				...prev,
+				error: 'Failed to process incoming call',
+				connectionState: ConnectionState.ERROR,
+			}));
 		}
 	};
 
@@ -138,9 +184,15 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		if (!peerConnection) return;
 
 		try {
+			console.log('Setting remote description from answer');
 			await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
 		} catch (error) {
 			console.error('Error handling answer:', error);
+			setCallState(prev => ({
+				...prev,
+				error: 'Failed to establish connection',
+				connectionState: ConnectionState.ERROR,
+			}));
 		}
 	};
 
@@ -148,6 +200,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		if (!peerConnection) return;
 
 		try {
+			console.log('Adding ICE candidate');
 			await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
 		} catch (error) {
 			console.error('Error handling ICE candidate:', error);
@@ -163,6 +216,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		if (peerConnection) {
 			peerConnection.close();
 		}
+		setPeerConnection(null);
 	};
 
 	const initializeMediaDevices = async (): Promise<MediaStream> => {
@@ -202,23 +256,21 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 	};
 
 	const initializePeerConnection = (stream: MediaStream): RTCPeerConnection => {
-		if (peerConnection) {
-			peerConnection.close();
-		}
+		console.log('Initializing peer connection');
+		
+		const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-		const pc = new RTCPeerConnection({
-			iceServers: [
-				{ urls: "stun:stun.l.google.com:19302" },
-				{ urls: "stun:stun1.l.google.com:19302" },
-			],
-		});
-
+		// Add local stream tracks to peer connection
 		stream.getTracks().forEach((track) => {
+			console.log('Adding track to peer connection:', track.kind);
 			pc.addTrack(track, stream);
 		});
 
+		// Handle remote stream
 		pc.ontrack = (event) => {
+			console.log('Received remote track:', event.track.kind);
 			if (event.streams && event.streams[0]) {
+				console.log('Setting remote stream');
 				setMediaState(prev => ({
 					...prev,
 					remoteStream: event.streams[0]
@@ -226,8 +278,10 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}
 		};
 
+		// Handle ICE candidates
 		pc.onicecandidate = (event) => {
 			if (event.candidate) {
+				console.log('New ICE candidate:', event.candidate);
 				sendWebSocketMessage({
 					type: 'ice-candidate',
 					payload: event.candidate,
@@ -236,6 +290,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}
 		};
 
+		// Handle connection state changes
 		pc.oniceconnectionstatechange = () => {
 			console.log("ICE connection state:", pc.iceConnectionState);
 
@@ -258,6 +313,25 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			}
 		};
 
+		// Handle negotiation needed
+		pc.onnegotiationneeded = async () => {
+			if (isInitiator.current) {
+				try {
+					console.log('Negotiation needed, creating offer');
+					const offer = await pc.createOffer();
+					await pc.setLocalDescription(offer);
+					
+					sendWebSocketMessage({
+						type: 'offer',
+						payload: offer,
+						from: user?.id || '',
+					});
+				} catch (error) {
+					console.error('Error during negotiation:', error);
+				}
+			}
+		};
+
 		setPeerConnection(pc);
 		return pc;
 	};
@@ -266,8 +340,14 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		if (!peerConnection || !callState.sessionId) return;
 
 		try {
+			console.log('Initiating call');
+			isInitiator.current = true;
+
 			const offer = await peerConnection.createOffer();
+			console.log('Created offer:', offer);
+			
 			await peerConnection.setLocalDescription(offer);
+			console.log('Set local description');
 
 			sendWebSocketMessage({
 				type: 'offer',
@@ -319,6 +399,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				throw new Error("Failed to create session");
 			}
 
+			isInitiator.current = true;
 			initializePeerConnection(stream);
 			connectWebSocket(sessionData.id);
 
@@ -355,8 +436,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 			});
 
 			const stream = await initializeMediaDevices();
-			const pc = initializePeerConnection(stream);
-
+			
 			const token = localStorage.getItem("authToken");
 			if (!token) {
 				throw new Error("User is not authenticated");
@@ -377,6 +457,8 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 				throw new Error("Failed to join session");
 			}
 
+			isInitiator.current = false;
+			initializePeerConnection(stream);
 			connectWebSocket(sessionId);
 
 			setCallState({
@@ -410,6 +492,7 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 		setPeerConnection(null);
 		setCallState(initialCallState);
 		setMediaState(initialMediaState);
+		isInitiator.current = false;
 	};
 
 	const toggleAudio = (): void => {
@@ -450,55 +533,59 @@ export const CallProvider: React.FC<{ children: ReactNode }> = ({
 					const screenTrack = screenStream.getVideoTracks()[0];
 
 					if (videoTrack && screenTrack) {
-						mediaState.localStream.removeTrack(videoTrack);
-						mediaState.localStream.addTrack(screenTrack);
-
-						const senders = peerConnection.getSenders();
-						const sender = senders.find(
+						const sender = peerConnection.getSenders().find(
 							(s) => s.track && s.track.kind === "video"
 						);
+						
 						if (sender) {
 							await sender.replaceTrack(screenTrack);
+							mediaState.localStream.removeTrack(videoTrack);
+							mediaState.localStream.addTrack(screenTrack);
+
+							screenTrack.onended = async () => {
+								const newVideoTrack = await navigator.mediaDevices.getUserMedia({ video: true })
+									.then(stream => stream.getVideoTracks()[0]);
+								
+								if (sender && newVideoTrack) {
+									await sender.replaceTrack(newVideoTrack);
+									mediaState.localStream?.removeTrack(screenTrack);
+									mediaState.localStream?.addTrack(newVideoTrack);
+								}
+								
+								setMediaState(prev => ({
+									...prev,
+									isSharingScreen: false,
+								}));
+							};
+
+							setMediaState(prev => ({
+								...prev,
+								isSharingScreen: true,
+							}));
 						}
-
-						screenTrack.onended = () => {
-							toggleScreenShare();
-						};
-
-						setMediaState(prev => ({
-							...prev,
-							isSharingScreen: true,
-						}));
 					}
 				}
 			} else {
-				const cameraStream = await navigator.mediaDevices.getUserMedia({
-					video: true,
-				});
+				const newVideoTrack = await navigator.mediaDevices.getUserMedia({ video: true })
+					.then(stream => stream.getVideoTracks()[0]);
 
-				if (mediaState.localStream && peerConnection) {
-					const screenTrack = mediaState.localStream.getVideoTracks()[0];
-					const cameraTrack = cameraStream.getVideoTracks()[0];
-
-					if (screenTrack && cameraTrack) {
-						mediaState.localStream.removeTrack(screenTrack);
-						mediaState.localStream.addTrack(cameraTrack);
-
-						const senders = peerConnection.getSenders();
-						const sender = senders.find(
-							(s) => s.track && s.track.kind === "video"
-						);
-						if (sender) {
-							await sender.replaceTrack(cameraTrack);
-						}
-
-						screenTrack.stop();
-
-						setMediaState(prev => ({
-							...prev,
-							isSharingScreen: false,
-						}));
+				if (mediaState.localStream && peerConnection && newVideoTrack) {
+					const sender = peerConnection.getSenders().find(
+						(s) => s.track && s.track.kind === "video"
+					);
+					
+					if (sender) {
+						await sender.replaceTrack(newVideoTrack);
+						const oldTrack = mediaState.localStream.getVideoTracks()[0];
+						mediaState.localStream.removeTrack(oldTrack);
+						mediaState.localStream.addTrack(newVideoTrack);
+						oldTrack.stop();
 					}
+
+					setMediaState(prev => ({
+						...prev,
+						isSharingScreen: false,
+					}));
 				}
 			}
 		} catch (error) {
