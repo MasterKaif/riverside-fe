@@ -100,7 +100,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       // Make API call to register endpoint
-      const response = await axiosInstance.post('api/v1/auth/register', { name, email, password });
+      const response = await axiosInstance.post('api/v1/auth/signup', { name, email, password });
 
       // Assuming the API responds with a token and user details
       const { token, user } = response.data;

@@ -23,12 +23,15 @@ const VideoRoom: React.FC = () => {
   
   useEffect(() => {
     if (mediaState.localStream && localVideoRef.current) {
+      console.log('Setting local video stream');
       localVideoRef.current.srcObject = mediaState.localStream;
     }
   }, [mediaState.localStream]);
   
   useEffect(() => {
+    console.log('Remote stream changed:', mediaState.remoteStream);
     if (mediaState.remoteStream && remoteVideoRef.current) {
+      console.log('Setting remote video stream with tracks:', mediaState.remoteStream.getTracks().map(t => t.kind));
       remoteVideoRef.current.srcObject = mediaState.remoteStream;
       setIsCallStarted(true);
     }
@@ -139,9 +142,9 @@ const VideoRoom: React.FC = () => {
                 className="inline-flex items-center px-6 py-3 border border-transparent text-lg font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
                 <PhoneCall className="mr-2 h-6 w-6" />
-                Start Call
+                Join Call
               </button>
-              <p className="mt-4 text-gray-400">Click to start the video call</p>
+              <p className="mt-4 text-gray-400">Click to join the video call</p>
             </div>
           </div>
         ) : null}
